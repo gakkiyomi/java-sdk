@@ -7,90 +7,75 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Flow;
+import java.net.http.HttpResponse.BodySubscriber;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
 import java.util.regex.Pattern;
 
+import org.reactivestreams.FlowAdapters;
+import org.reactivestreams.Subscription;
+
+import reactor.core.publisher.BaseSubscriber;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.FluxSink;
+
 /**
- * A Server-Sent Events (SSE) client implementation using Java's Flow API for reactive
- * stream processing. This client establishes a connection to an SSE endpoint and
- * processes the incoming event stream, parsing SSE-formatted messages into structured
- * events.
+ * A Server-Sent Events (SSE) client using Java's Flow API for reactive stream processing.
+ * Connects to SSE endpoints and parses incoming events according to the W3C SSE
+ * specification.
  *
  * <p>
- * The client supports standard SSE event fields including:
- * <ul>
- * <li>event - The event type (defaults to "message" if not specified)</li>
- * <li>id - The event ID</li>
- * <li>data - The event payload data</li>
- * </ul>
+ * Supports standard SSE fields: event type, id, and data (including multi-line). Events
+ * are delivered as a {@link Flux} of {@link SseEvent} records.
  *
  * <p>
- * Events are delivered to a provided {@link SseEventHandler} which can process events and
- * handle any errors that occur during the connection.
+ * This class is thread-safe. Errors are propagated through the reactive stream.
  *
  * @author Christian Tzolov
- * @see SseEventHandler
+ * @author Dariusz Jędrzejczyk
  * @see SseEvent
+ * @see HttpClient
+ * @see Flux
  */
 public class FlowSseClient {
 
+	/**
+	 * The HTTP client used for establishing SSE connections.
+	 */
 	private final HttpClient httpClient;
 
+	/**
+	 * The HTTP request builder template for creating SSE requests.
+	 */
 	private final HttpRequest.Builder requestBuilder;
 
 	/**
-	 * Pattern to extract the data content from SSE data field lines. Matches lines
-	 * starting with "data:" and captures the remaining content.
+	 * Pattern to extract data content from SSE "data:" lines.
 	 */
 	private static final Pattern EVENT_DATA_PATTERN = Pattern.compile("^data:(.+)$", Pattern.MULTILINE);
 
 	/**
-	 * Pattern to extract the event ID from SSE id field lines. Matches lines starting
-	 * with "id:" and captures the ID value.
+	 * Pattern to extract event ID from SSE "id:" lines.
 	 */
 	private static final Pattern EVENT_ID_PATTERN = Pattern.compile("^id:(.+)$", Pattern.MULTILINE);
 
 	/**
-	 * Pattern to extract the event type from SSE event field lines. Matches lines
-	 * starting with "event:" and captures the event type.
+	 * Pattern to extract event type from SSE "event:" lines.
 	 */
 	private static final Pattern EVENT_TYPE_PATTERN = Pattern.compile("^event:(.+)$", Pattern.MULTILINE);
 
 	/**
-	 * Record class representing a Server-Sent Event with its standard fields.
+	 * Represents a Server-Sent Event with its standard fields.
 	 *
-	 * @param id the event ID (may be null)
-	 * @param type the event type (defaults to "message" if not specified in the stream)
-	 * @param data the event payload data
+	 * @param id the event ID, may be {@code null}
+	 * @param event the event type, may be {@code null} (defaults to "message")
+	 * @param data the event payload data, never {@code null}
 	 */
-	public static record SseEvent(String id, String type, String data) {
+	public static record SseEvent(String id, String event, String data) {
 	}
 
 	/**
-	 * Interface for handling SSE events and errors. Implementations can process received
-	 * events and handle any errors that occur during the SSE connection.
-	 */
-	public interface SseEventHandler {
-
-		/**
-		 * Called when an SSE event is received.
-		 * @param event the received SSE event containing id, type, and data
-		 */
-		void onEvent(SseEvent event);
-
-		/**
-		 * Called when an error occurs during the SSE connection.
-		 * @param error the error that occurred
-		 */
-		void onError(Throwable error);
-
-	}
-
-	/**
-	 * Creates a new FlowSseClient with the specified HTTP client.
+	 * Creates a new FlowSseClient with the specified HTTP client using default request
+	 * settings.
 	 * @param httpClient the {@link HttpClient} instance to use for SSE connections
 	 */
 	public FlowSseClient(HttpClient httpClient) {
@@ -98,9 +83,15 @@ public class FlowSseClient {
 	}
 
 	/**
-	 * Creates a new FlowSseClient with the specified HTTP client and request builder.
+	 * Creates a new FlowSseClient with the specified HTTP client and custom request
+	 * builder.
+	 *
+	 * <p>
+	 * The builder can be pre-configured with headers, authentication, or other request
+	 * properties. Required SSE headers will be added automatically.
 	 * @param httpClient the {@link HttpClient} instance to use for SSE connections
-	 * @param requestBuilder the {@link HttpRequest.Builder} to use for SSE requests
+	 * @param requestBuilder the {@link HttpRequest.Builder} template to use for SSE
+	 * requests
 	 */
 	public FlowSseClient(HttpClient httpClient, HttpRequest.Builder requestBuilder) {
 		this.httpClient = httpClient;
@@ -108,103 +99,179 @@ public class FlowSseClient {
 	}
 
 	/**
-	 * Subscribes to an SSE endpoint and processes the event stream.
+	 * Subscribes to an SSE endpoint and returns a reactive stream of events.
 	 *
 	 * <p>
-	 * This method establishes a connection to the specified URL and begins processing the
-	 * SSE stream. Events are parsed and delivered to the provided event handler. The
-	 * connection remains active until either an error occurs or the server closes the
-	 * connection.
+	 * The returned {@link Flux} is cold - each subscription creates a separate HTTP
+	 * connection. Required SSE headers are set automatically. Events are parsed according
+	 * to the SSE specification.
 	 * @param url the SSE endpoint URL to connect to
-	 * @param eventHandler the handler that will receive SSE events and error
-	 * notifications
-	 * @throws RuntimeException if the connection fails with a non-200 status code
+	 * @return a {@link Flux} of {@link SseEvent} objects representing the event stream
+	 * @throws IllegalArgumentException if the URL is malformed
+	 * @throws RuntimeException if the connection fails with an unexpected HTTP status
+	 * code
 	 */
-	public void subscribe(String url, SseEventHandler eventHandler) {
+	public Flux<SseEvent> events(String url) {
+
 		HttpRequest request = this.requestBuilder.uri(URI.create(url))
 			.header("Accept", "text/event-stream")
 			.header("Cache-Control", "no-cache")
 			.GET()
 			.build();
 
-		StringBuilder eventBuilder = new StringBuilder();
-		AtomicReference<String> currentEventId = new AtomicReference<>();
-		AtomicReference<String> currentEventType = new AtomicReference<>("message");
-
-		Flow.Subscriber<String> lineSubscriber = new Flow.Subscriber<>() {
-			private Flow.Subscription subscription;
-
-			@Override
-			public void onSubscribe(Flow.Subscription subscription) {
-				this.subscription = subscription;
-				subscription.request(Long.MAX_VALUE);
-			}
-
-			@Override
-			public void onNext(String line) {
-				if (line.isEmpty()) {
-					// Empty line means end of event
-					if (eventBuilder.length() > 0) {
-						String eventData = eventBuilder.toString();
-						SseEvent event = new SseEvent(currentEventId.get(), currentEventType.get(), eventData.trim());
-						eventHandler.onEvent(event);
-						eventBuilder.setLength(0);
-					}
+		return Flux.<SseEvent>create(sseSink -> httpClient.sendAsync(request, responseInfo -> toBodySubscriber(sseSink))
+			.whenComplete((response, throwable) -> {
+				if (throwable != null) {
+					sseSink.error(throwable);
 				}
 				else {
-					if (line.startsWith("data:")) {
-						var matcher = EVENT_DATA_PATTERN.matcher(line);
-						if (matcher.find()) {
-							eventBuilder.append(matcher.group(1).trim()).append("\n");
-						}
+					int status = response.statusCode();
+					if (status != 200 && status != 201 && status != 202 && status != 204 && status != 206) {
+						sseSink.error(new RuntimeException(
+								"Failed to connect to SSE stream. Unexpected status code: " + status));
 					}
-					else if (line.startsWith("id:")) {
-						var matcher = EVENT_ID_PATTERN.matcher(line);
-						if (matcher.find()) {
-							currentEventId.set(matcher.group(1).trim());
-						}
-					}
-					else if (line.startsWith("event:")) {
-						var matcher = EVENT_TYPE_PATTERN.matcher(line);
-						if (matcher.find()) {
-							currentEventType.set(matcher.group(1).trim());
-						}
-					}
+					// If status is OK, the lineSubscriber will handle the stream
 				}
-				subscription.request(1);
-			}
+			}));
+	}
 
-			@Override
-			public void onError(Throwable throwable) {
-				eventHandler.onError(throwable);
-			}
+	/**
+	 * Creates a {@link BodySubscriber} that processes the HTTP response body as SSE
+	 * events.
+	 * @param sseSink the {@link FluxSink} to emit parsed {@link SseEvent} objects to
+	 * @return a {@link BodySubscriber} that processes SSE response bodies
+	 */
+	private BodySubscriber<Void> toBodySubscriber(FluxSink<SseEvent> sseSink) {
+		return HttpResponse.BodySubscribers
+			.fromLineSubscriber(FlowAdapters.toFlowSubscriber(new LineSubscriber(sseSink)));
+	}
 
-			@Override
-			public void onComplete() {
-				// Handle any remaining event data
-				if (eventBuilder.length() > 0) {
-					String eventData = eventBuilder.toString();
+	/**
+	 * A reactive subscriber that processes SSE protocol lines and reconstructs complete
+	 * events.
+	 *
+	 * <p>
+	 * Handles line-by-line processing of SSE data, maintaining state for the current
+	 * event and emitting complete {@link SseEvent} objects when event boundaries (empty
+	 * lines) are encountered.
+	 */
+	public static class LineSubscriber extends BaseSubscriber<String> {
+
+		/**
+		 * The sink for emitting parsed SSE events.
+		 */
+		private final FluxSink<SseEvent> sseSink;
+
+		/**
+		 * StringBuilder for accumulating multi-line event data.
+		 */
+		private final StringBuilder eventBuilder;
+
+		/**
+		 * Current event's ID, if specified.
+		 */
+		private final AtomicReference<String> currentEventId;
+
+		/**
+		 * Current event's type, if specified.
+		 */
+		private final AtomicReference<String> currentEventType;
+
+		/**
+		 * Creates a new LineSubscriber that will emit parsed SSE events to the provided
+		 * sink.
+		 * @param sseSink the {@link FluxSink} to emit parsed {@link SseEvent} objects to
+		 */
+		public LineSubscriber(FluxSink<SseEvent> sseSink) {
+			this.sseSink = sseSink;
+			this.eventBuilder = new StringBuilder();
+			this.currentEventId = new AtomicReference<>();
+			this.currentEventType = new AtomicReference<>();
+		}
+
+		/**
+		 * Initializes the subscription and sets up disposal callback.
+		 * @param subscription the {@link Subscription} to the upstream line source
+		 */
+		@Override
+		protected void hookOnSubscribe(Subscription subscription) {
+
+			sseSink.onRequest(n -> {
+				if (subscription != null) {
+					subscription.request(n);
+				}
+			});
+
+			// Register disposal callback to cancel subscription when Flux is disposed
+			sseSink.onDispose(() -> {
+				if (subscription != null) {
+					subscription.cancel();
+				}
+			});
+		}
+
+		/**
+		 * Processes each line from the SSE stream according to the SSE protocol. Empty
+		 * lines trigger event emission, other lines are parsed for data, id, or event
+		 * type.
+		 * @param line the line to process from the SSE stream
+		 */
+		@Override
+		protected void hookOnNext(String line) {
+			if (line.isEmpty()) {
+				// Empty line means end of event
+				if (this.eventBuilder.length() > 0) {
+					String eventData = this.eventBuilder.toString();
 					SseEvent event = new SseEvent(currentEventId.get(), currentEventType.get(), eventData.trim());
-					eventHandler.onEvent(event);
+
+					this.sseSink.next(event);
+					this.eventBuilder.setLength(0);
 				}
 			}
-		};
-
-		Function<Flow.Subscriber<String>, HttpResponse.BodySubscriber<Void>> subscriberFactory = subscriber -> HttpResponse.BodySubscribers
-			.fromLineSubscriber(subscriber);
-
-		CompletableFuture<HttpResponse<Void>> future = this.httpClient.sendAsync(request,
-				info -> subscriberFactory.apply(lineSubscriber));
-
-		future.thenAccept(response -> {
-			int status = response.statusCode();
-			if (status != 200 && status != 201 && status != 202 && status != 206) {
-				throw new RuntimeException("Failed to connect to SSE stream. Unexpected status code: " + status);
+			else {
+				if (line.startsWith("data:")) {
+					var matcher = EVENT_DATA_PATTERN.matcher(line);
+					if (matcher.find()) {
+						this.eventBuilder.append(matcher.group(1).trim()).append("\n");
+					}
+				}
+				else if (line.startsWith("id:")) {
+					var matcher = EVENT_ID_PATTERN.matcher(line);
+					if (matcher.find()) {
+						this.currentEventId.set(matcher.group(1).trim());
+					}
+				}
+				else if (line.startsWith("event:")) {
+					var matcher = EVENT_TYPE_PATTERN.matcher(line);
+					if (matcher.find()) {
+						this.currentEventType.set(matcher.group(1).trim());
+					}
+				}
 			}
-		}).exceptionally(throwable -> {
-			eventHandler.onError(throwable);
-			return null;
-		});
+		}
+
+		/**
+		 * Called when the upstream line source completes normally.
+		 */
+		@Override
+		protected void hookOnComplete() {
+			if (this.eventBuilder.length() > 0) {
+				String eventData = this.eventBuilder.toString();
+				SseEvent event = new SseEvent(currentEventId.get(), currentEventType.get(), eventData.trim());
+				this.sseSink.next(event);
+			}
+			this.sseSink.complete();
+		}
+
+		/**
+		 * Called when an error occurs in the upstream line source.
+		 * @param throwable the error that occurred
+		 */
+		@Override
+		protected void hookOnError(Throwable throwable) {
+			this.sseSink.error(throwable);
+		}
+
 	}
 
 }
