@@ -44,6 +44,11 @@ public class ResponseSubscribers {
 			.fromLineSubscriber(FlowAdapters.toFlowSubscriber(new JsonLineSubscriber(responseInfo, sink)));
 	}
 
+	public static BodySubscriber<Void> bodylessBodySubscriber(FluxSink<ResponseEvent> sink) {
+		return HttpResponse.BodySubscribers
+			.fromLineSubscriber(FlowAdapters.toFlowSubscriber(new BodylessResponseLineSubscriber(sink)));
+	}
+
 	public static class SseLineSubscriber extends BaseSubscriber<String> {
 
 		/**
@@ -263,6 +268,62 @@ public class ResponseSubscribers {
 					sink.error(e);
 				}
 			}
+			this.sink.complete();
+		}
+
+		/**
+		 * Called when an error occurs in the upstream line source.
+		 * @param throwable the error that occurred
+		 */
+		@Override
+		protected void hookOnError(Throwable throwable) {
+			this.sink.error(throwable);
+		}
+
+	}
+
+	public static class BodylessResponseLineSubscriber extends BaseSubscriber<String> {
+
+		/**
+		 * The sink for emitting parsed response events.
+		 */
+		private final FluxSink<ResponseEvent> sink;
+
+		public BodylessResponseLineSubscriber(FluxSink<ResponseEvent> sink) {
+			this.sink = sink;
+		}
+
+		/**
+		 * Initializes the subscription and sets up disposal callback.
+		 * @param subscription the {@link Subscription} to the upstream line source
+		 */
+		@Override
+		protected void hookOnSubscribe(Subscription subscription) {
+
+			sink.onRequest(n -> {
+				if (subscription != null) {
+					subscription.request(n);
+				}
+			});
+
+			// Register disposal callback to cancel subscription when Flux is disposed
+			sink.onDispose(() -> {
+				if (subscription != null) {
+					subscription.cancel();
+				}
+			});
+		}
+
+		@Override
+		protected void hookOnNext(String line) {
+			System.out.println(">>>>>>>>>>>>>> Received line: " + line);
+		}
+
+		/**
+		 * Called when the upstream line source completes normally.
+		 */
+		@Override
+		protected void hookOnComplete() {
 			this.sink.complete();
 		}
 

@@ -101,6 +101,14 @@ public class HttpClientStreamableHttpAsyncClientTests extends AbstractMcpAsyncCl
 	}
 
 	@Test
+	void testInitialize() {
+		System.setProperty("jdk.internal.httpclient.debug", "true");
+		withClient(createMcpTransport(), mcpAsyncClient -> {
+			StepVerifier.create(mcpAsyncClient.initialize()).expectNextCount(1).verifyComplete();
+		});
+	}
+
+	@Test
 	void testPing2() {
 		withClient(createMcpTransport(), mcpAsyncClient -> {
 			StepVerifier.create(mcpAsyncClient.initialize().then(mcpAsyncClient.ping()))
