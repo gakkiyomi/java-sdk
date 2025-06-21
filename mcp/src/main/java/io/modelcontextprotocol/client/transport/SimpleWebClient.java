@@ -20,10 +20,12 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -52,6 +54,10 @@ public class SimpleWebClient {
 		this.baseUri = baseUri;
 	}
 
+	public String getBaseUrl() {
+		return baseUri != null ? baseUri.toString() : null;
+	}
+
 	public HttpClient getHttpClient() {
 		return this.httpClient;
 	}
@@ -64,28 +70,12 @@ public class SimpleWebClient {
 		return new Builder();
 	}
 
-	// /**
-	// * Start building a GET request.
-	// * @return a GET request specification
-	// */
-	// public GetRequestSpec get() {
-	// return new GetRequestSpec();
-	// }
-
 	/**
 	 * Start building a POST request.
 	 * @return a POST request specification
 	 */
 	public PostRequestSpec post() {
 		return new PostRequestSpec();
-	}
-
-	/**
-	 * Start building a DELETE request.
-	 * @return a DELETE request specification
-	 */
-	public DeleteRequestSpec delete() {
-		return new DeleteRequestSpec();
 	}
 
 	/**
@@ -307,38 +297,6 @@ public class SimpleWebClient {
 	}
 
 	/**
-	 * GET request specification.
-	 */
-	// public class GetRequestSpec extends BaseRequestSpec {
-
-	// /**
-	// * Execute the GET request and return a Flux for Server-Sent Events.
-	// * @param responseHandler function to handle the response
-	// * @param <T> the response type
-	// * @return a Flux of the response type
-	// */
-	// @Override
-	// public <T> Flux<T> exchangeToFlux(Function<SimpleClientResponse, Flux<T>>
-	// responseHandler) {
-	// HttpRequest request = createBaseRequest().GET().build();
-
-	// return Mono.fromFuture(() -> httpClient.sendAsync(request,
-	// HttpResponse.BodyHandlers.ofString()))
-	// .map(SimpleClientResponse::new)
-	// .flatMapMany(responseHandler)
-	// .onErrorMap(this::mapException);
-	// }
-
-	// private Throwable mapException(Throwable throwable) {
-	// if (throwable instanceof RuntimeException) {
-	// return throwable;
-	// }
-	// return new RuntimeException("HTTP request failed", throwable);
-	// }
-
-	// }
-
-	/**
 	 * POST request specification.
 	 */
 	public class PostRequestSpec extends BaseRequestSpec {
@@ -384,25 +342,6 @@ public class SimpleWebClient {
 				return throwable;
 			}
 			return new RuntimeException("HTTP request failed", throwable);
-		}
-
-	}
-
-	/**
-	 * DELETE request specification.
-	 */
-	public class DeleteRequestSpec extends BaseRequestSpec {
-
-		/**
-		 * Execute the DELETE request and retrieve the response.
-		 * @return a ResponseSpec for further processing
-		 */
-		public ResponseSpec retrieve() {
-			HttpRequest request = createBaseRequest().DELETE().build();
-
-			return new ResponseSpec(
-					Mono.fromFuture(() -> httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString()))
-						.map(SimpleClientResponse::new));
 		}
 
 	}
