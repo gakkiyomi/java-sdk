@@ -15,13 +15,22 @@ import org.reactivestreams.Subscription;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import io.modelcontextprotocol.client.transport.FlowSseClient.SseEvent;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage;
 import reactor.core.publisher.BaseSubscriber;
 import reactor.core.publisher.FluxSink;
 
 public class ResponseSubscribers {
+
+	/**
+	 * Represents a Server-Sent Event with its standard fields.
+	 *
+	 * @param id the event ID, may be {@code null}
+	 * @param event the event type, may be {@code null} (defaults to "message")
+	 * @param data the event payload data, never {@code null}
+	 */
+	public static record SseEvent(String id, String event, String data) {
+	}
 
 	public record ResponseEvent(ResponseInfo responseInfo, SseEvent sseEvent, JSONRPCMessage jsonRpcMessage) {
 
@@ -44,9 +53,9 @@ public class ResponseSubscribers {
 			.fromLineSubscriber(FlowAdapters.toFlowSubscriber(new JsonLineSubscriber(responseInfo, sink)));
 	}
 
-	public static BodySubscriber<Void> bodylessBodySubscriber(FluxSink<ResponseEvent> sink) {
+	public static BodySubscriber<Void> bodylessBodySubscriber(ResponseInfo responseInfo, FluxSink<ResponseEvent> sink) {
 		return HttpResponse.BodySubscribers
-			.fromLineSubscriber(FlowAdapters.toFlowSubscriber(new BodylessResponseLineSubscriber(sink)));
+			.fromLineSubscriber(FlowAdapters.toFlowSubscriber(new BodylessResponseLineSubscriber(responseInfo, sink)));
 	}
 
 	public static class SseLineSubscriber extends BaseSubscriber<String> {
@@ -289,8 +298,11 @@ public class ResponseSubscribers {
 		 */
 		private final FluxSink<ResponseEvent> sink;
 
-		public BodylessResponseLineSubscriber(FluxSink<ResponseEvent> sink) {
+		private final ResponseInfo responseInfo;
+
+		public BodylessResponseLineSubscriber(ResponseInfo responseInfo, FluxSink<ResponseEvent> sink) {
 			this.sink = sink;
+			this.responseInfo = responseInfo;
 		}
 
 		/**
@@ -324,6 +336,7 @@ public class ResponseSubscribers {
 		 */
 		@Override
 		protected void hookOnComplete() {
+			this.sink.next(new ResponseEvent(responseInfo, new SseEvent(null, null, null)));
 			this.sink.complete();
 		}
 

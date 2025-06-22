@@ -1,11 +1,11 @@
 package io.modelcontextprotocol.client;
 
-import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
-import io.modelcontextprotocol.client.transport.SimpleWebClient;
-import io.modelcontextprotocol.spec.McpClientTransport;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
+
+import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
+import io.modelcontextprotocol.spec.McpClientTransport;
 
 @Timeout(15)
 public class HttpClientStreamableHttpSyncClientTests extends AbstractMcpSyncClientTests {
@@ -22,7 +22,7 @@ public class HttpClientStreamableHttpSyncClientTests extends AbstractMcpSyncClie
 
 	@Override
 	protected McpClientTransport createMcpTransport() {
-		return HttpClientStreamableHttpTransport.builder(SimpleWebClient.builder().baseUrl(host)).build();
+		return HttpClientStreamableHttpTransport.builder(host).build();
 	}
 
 	@Override
