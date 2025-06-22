@@ -13,19 +13,22 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import io.modelcontextprotocol.client.transport.ResponseSubscribers.ResponseEvent;
 import io.modelcontextprotocol.spec.McpClientTransport;
 import io.modelcontextprotocol.spec.McpError;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.JSONRPCMessage;
 import io.modelcontextprotocol.util.Assert;
 import io.modelcontextprotocol.util.Utils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.MonoSink;
 import reactor.core.publisher.Sinks;
 
 /**
@@ -51,14 +54,9 @@ import reactor.core.publisher.Sinks;
  * <li>'message' - Contains JSON-RPC message payload</li>
  * </ul>
  *
- * <p>
- * This version uses FlowSseClient which returns a Flux&lt;SseEvent&gt; instead of using
- * callback-based event handling.
- *
  * @author Christian Tzolov
  * @see io.modelcontextprotocol.spec.McpTransport
  * @see io.modelcontextprotocol.spec.McpClientTransport
- * @see FlowSseClient
  */
 public class HttpClientSseClientTransport implements McpClientTransport {
 
@@ -78,9 +76,6 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 
 	/** SSE endpoint path */
 	private final String sseEndpoint;
-
-	/** SSE client for handling server-sent events. Uses the /sse endpoint */
-	private final FlowSseClient sseClient;
 
 	/**
 	 * HTTP client for sending messages to the server. Uses HTTP POST over the message
@@ -195,8 +190,6 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 		this.objectMapper = objectMapper;
 		this.httpClient = httpClient;
 		this.requestBuilder = requestBuilder;
-
-		this.sseClient = new FlowSseClient(this.httpClient, requestBuilder);
 	}
 
 	/**
@@ -336,60 +329,79 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 
 	@Override
 	public Mono<Void> connect(Function<Mono<JSONRPCMessage>, Mono<JSONRPCMessage>> handler) {
-		return Mono.<Void>create(sink -> subscribeSse(handler, sink))
-			.doOnError(err -> logger.error("Error during connection", err))
-			.then(this.messageEndpointSink.asMono().then());
-	}
 
-	private void subscribeSse(Function<Mono<JSONRPCMessage>, Mono<JSONRPCMessage>> handler, MonoSink<Void> sink) {
+		return Mono.create(sink -> {
 
-		URI clientUri = Utils.resolveUri(this.baseUri, this.sseEndpoint);
+			HttpRequest request = requestBuilder.uri(Utils.resolveUri(this.baseUri, this.sseEndpoint))
+				.header("Accept", "text/event-stream")
+				.header("Cache-Control", "no-cache")
+				.GET()
+				.build();
 
-		Disposable subscription = this.sseClient.events(clientUri.toString())
-			.doOnSubscribe(s -> logger.debug("Subscribing to SSE events at: {}", clientUri))
-			.subscribe(event -> {
-				if (isClosing) {
-					return;
-				}
+			Disposable connection = Flux
+				.<ResponseEvent>create(sseSink -> this.httpClient.sendAsync(request,
+						responseInfo -> ResponseSubscribers.sseToBodySubscriber(responseInfo, sseSink)))
+				.flatMap(responseEvent -> {
+					if (isClosing) {
+						return Mono.empty();
+					}
 
-				try {
-					if (ENDPOINT_EVENT_TYPE.equals(event.event())) {
-						String messageEndpointUri = event.data();
-						if (this.messageEndpointSink.tryEmitValue(messageEndpointUri).isSuccess()) {
-							sink.success();
+					int statusCode = responseEvent.responseInfo().statusCode();
+
+					if (statusCode >= 200 && statusCode < 300) {
+						try {
+							if (ENDPOINT_EVENT_TYPE.equals(responseEvent.sseEvent().event())) {
+								String messageEndpointUri = responseEvent.sseEvent().data();
+								if (this.messageEndpointSink.tryEmitValue(messageEndpointUri).isSuccess()) {
+									sink.success();
+									return Flux.empty(); // No further processing needed
+								}
+								else {
+									sink.error(new McpError("Failed to handle SSE endpoint event"));
+								}
+							}
+							else if (MESSAGE_EVENT_TYPE.equals(responseEvent.sseEvent().event())) {
+								JSONRPCMessage message = McpSchema.deserializeJsonRpcMessage(objectMapper,
+										responseEvent.sseEvent().data());
+								sink.success();
+								return Flux.just(message);
+							}
+							else {
+								logger.error("Received unrecognized SSE event type: {}",
+										responseEvent.sseEvent().event());
+								sink.error(new McpError(
+										"Received unrecognized SSE event type: " + responseEvent.sseEvent().event()));
+							}
 						}
-						else {
-							sink.error(new McpError("Failed to handle SSE endpoint event"));
+						catch (IOException e) {
+							logger.error("Error processing SSE event", e);
+							sink.error(new McpError("Error processing SSE event"));
 						}
 					}
-					else if (MESSAGE_EVENT_TYPE.equals(event.event())) {
-						JSONRPCMessage message = McpSchema.deserializeJsonRpcMessage(objectMapper, event.data());
-						handler.apply(Mono.just(message)).subscribe();
-						sink.success();
-					}
-					else {
-						logger.error("Received unrecognized SSE event type: {}", event.event());
-						sink.error(new McpError("Received unrecognized SSE event type: " + event.event()));
-					}
-				}
-				catch (IOException e) {
-					logger.error("Error processing SSE event", e);
-					sink.error(new McpError("Error processing SSE event"));
-				}
-			}, error -> {
-				Disposable ref = this.sseSubscription.getAndSet(null);
-				if (ref != null && !ref.isDisposed()) {
-					ref.dispose();
-				}
-				if (!isClosing) {
-					logger.error("SSE connection error", error);
-					sink.error(error);
-				}
-			}, () -> {
-				logger.debug("SSE connection completed");
-			});
+					return Flux.<McpSchema.JSONRPCMessage>error(
+							new RuntimeException("Failed to send message: " + responseEvent));
 
-		this.sseSubscription.set(subscription);
+				})
+				.flatMap(jsonRpcMessage -> handler.apply(Mono.just(jsonRpcMessage)))
+				.onErrorResume(t -> {
+					if (!isClosing) {
+						logger.error("SSE connection error", t);
+						sink.error(t);
+					}
+					return Mono.empty();
+
+				})
+				.doFinally(s -> {
+					Disposable ref = this.sseSubscription.getAndSet(null);
+					if (ref != null && !ref.isDisposed()) {
+						ref.dispose();
+					}
+				})
+				.contextWrite(sink.contextView())
+				.subscribe();
+
+			this.sseSubscription.set(connection);
+		});
 	}
 
 	/**

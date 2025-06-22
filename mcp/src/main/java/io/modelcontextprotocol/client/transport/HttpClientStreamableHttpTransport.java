@@ -34,6 +34,7 @@ import io.modelcontextprotocol.spec.McpTransportSession;
 import io.modelcontextprotocol.spec.McpTransportSessionNotFoundException;
 import io.modelcontextprotocol.spec.McpTransportStream;
 import io.modelcontextprotocol.util.Assert;
+import io.modelcontextprotocol.util.Utils;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
@@ -99,7 +100,7 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 
 	private final ObjectMapper objectMapper;
 
-	private final String baseUri;
+	private final URI baseUri;
 
 	private final String endpoint;
 
@@ -113,17 +114,13 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 
 	private final AtomicReference<Consumer<Throwable>> exceptionHandler = new AtomicReference<>();
 
-	// private WebClientStreamableHttpTransport(ObjectMapper objectMapper,
-	// WebClient.Builder webClientBuilder,
-	// String endpoint, boolean resumableStreams, boolean openConnectionOnStartup) {
-
 	private HttpClientStreamableHttpTransport(ObjectMapper objectMapper, HttpClient httpClient,
 			HttpRequest.Builder requestBuilder, String baseUri, String endpoint, boolean resumableStreams,
 			boolean openConnectionOnStartup) {
 		this.objectMapper = objectMapper;
 		this.httpClient = httpClient;
 		this.requestBuilder = requestBuilder;
-		this.baseUri = baseUri;
+		this.baseUri = URI.create(baseUri);
 		this.endpoint = endpoint;
 		this.resumableStreams = resumableStreams;
 		this.openConnectionOnStartup = openConnectionOnStartup;
@@ -154,9 +151,9 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 
 	private Publisher<Void> createDelete(String sessionId) {
 
-		return Mono.defer(() -> {
+		return Mono.defer(() -> { // Do we need to defer this?
 
-			HttpRequest request = this.requestBuilder.uri(URI.create(this.baseUri + this.endpoint))
+			HttpRequest request = this.requestBuilder.uri(Utils.resolveUri(this.baseUri, this.endpoint))
 				.header("Cache-Control", "no-cache")
 				.header("mcp-session-id", sessionId)
 				.DELETE()
@@ -200,6 +197,7 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 	}
 
 	private Mono<Disposable> reconnect(McpTransportStream<Disposable> stream) {
+
 		return Mono.deferContextual(ctx -> {
 
 			if (stream != null) {
@@ -222,7 +220,7 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 				requestBuilder = requestBuilder.header("last-event-id", stream.lastId().get());
 			}
 
-			HttpRequest request = requestBuilder.uri(URI.create(this.baseUri + this.endpoint))
+			HttpRequest request = requestBuilder.uri(Utils.resolveUri(this.baseUri, this.endpoint))
 				.header("Accept", TEXT_EVENT_STREAM)
 				.header("Cache-Control", "no-cache")
 				.GET()
@@ -294,14 +292,12 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 					String sessionIdRepresentation = sessionIdOrPlaceholder(transportSession);
 					McpTransportSessionNotFoundException exception = new McpTransportSessionNotFoundException(
 							"Session not found for session ID: " + sessionIdRepresentation);
-					// this.handleException(exception);
 					return Flux.<McpSchema.JSONRPCMessage>error(exception);
 				}
 				else if (statusCode == BAD_REQUEST) {
 					String sessionIdRepresentation = sessionIdOrPlaceholder(transportSession);
 					McpTransportSessionNotFoundException exception = new McpTransportSessionNotFoundException(
 							"Session not found for session ID: " + sessionIdRepresentation);
-					// this.handleException(exception);
 					return Flux.<McpSchema.JSONRPCMessage>error(exception);
 				}
 
@@ -387,7 +383,7 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 
 			String jsonBody = this.toString(sendMessage);
 
-			HttpRequest request = requestBuilder.uri(URI.create(this.baseUri + this.endpoint))
+			HttpRequest request = requestBuilder.uri(Utils.resolveUri(this.baseUri, this.endpoint))
 				.header("Accept", TEXT_EVENT_STREAM + ", " + APPLICATION_JSON)
 				.header("Content-Type", APPLICATION_JSON)
 				.header("Cache-Control", "no-cache")
@@ -489,8 +485,6 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 				else if (statusCode == NOT_FOUND) {
 					McpTransportSessionNotFoundException exception = new McpTransportSessionNotFoundException(
 							"Session not found for session ID: " + sessionRepresentation);
-					// this.handleException(exception);
-					// messageSink.error(exception);
 					return Flux.<McpSchema.JSONRPCMessage>error(exception);
 				}
 				// Some implementations can return 400 when presented with a
@@ -500,8 +494,6 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 				else if (statusCode == BAD_REQUEST) {
 					McpTransportSessionNotFoundException exception = new McpTransportSessionNotFoundException(
 							"Session not found for session ID: " + sessionRepresentation);
-					// this.handleException(exception);
-					// messageSink.error(exception);
 					return Flux.<McpSchema.JSONRPCMessage>error(exception);
 				}
 
