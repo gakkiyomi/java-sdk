@@ -1,19 +1,14 @@
 package io.modelcontextprotocol.client;
 
-import io.modelcontextprotocol.client.transport.WebClientStreamableHttpTransport;
-import io.modelcontextprotocol.spec.McpClientTransport;
-import reactor.test.StepVerifier;
-
-import java.time.Duration;
-
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.springframework.web.reactive.function.client.WebClient;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 
-import org.springframework.web.reactive.function.client.WebClient;
+import io.modelcontextprotocol.client.transport.WebClientStreamableHttpTransport;
+import io.modelcontextprotocol.spec.McpClientTransport;
 
-@Timeout(1500)
+@Timeout(15)
 public class WebClientStreamableHttpAsyncClientTests extends AbstractMcpAsyncClientTests {
 
 	static String host = "http://localhost:3001";
@@ -41,23 +36,6 @@ public class WebClientStreamableHttpAsyncClientTests extends AbstractMcpAsyncCli
 	@Override
 	public void onClose() {
 		container.stop();
-	}
-
-	@Test
-	void testPing2() {
-		withClient(createMcpTransport(), mcpAsyncClient -> {
-			StepVerifier.create(mcpAsyncClient.initialize().then(mcpAsyncClient.ping()))
-				.expectNextCount(1)
-				.verifyComplete();
-		});
-	}
-
-	protected Duration getRequestTimeout() {
-		return Duration.ofSeconds(1400);
-	}
-
-	protected Duration getInitializationTimeout() {
-		return Duration.ofSeconds(2000);
 	}
 
 }

@@ -153,7 +153,8 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 
 		return Mono.defer(() -> { // Do we need to defer this?
 
-			HttpRequest request = this.requestBuilder.uri(Utils.resolveUri(this.baseUri, this.endpoint))
+			HttpRequest request = this.requestBuilder.copy()
+				.uri(Utils.resolveUri(this.baseUri, this.endpoint))
 				.header("Cache-Control", "no-cache")
 				.header("mcp-session-id", sessionId)
 				.DELETE()
@@ -375,7 +376,7 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 			final AtomicReference<Disposable> disposableRef = new AtomicReference<>();
 			final McpTransportSession<Disposable> transportSession = this.activeSession.get();
 
-			HttpRequest.Builder requestBuilder = HttpRequest.newBuilder();
+			HttpRequest.Builder requestBuilder = this.requestBuilder.copy();
 
 			if (transportSession != null && transportSession.sessionId().isPresent()) {
 				requestBuilder = requestBuilder.header("mcp-session-id", transportSession.sessionId().get());
@@ -546,8 +547,7 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 
 		private boolean openConnectionOnStartup = false;
 
-		private HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-			.header("Content-Type", "application/json");
+		private HttpRequest.Builder requestBuilder = HttpRequest.newBuilder();
 
 		/**
 		 * Creates a new builder with the specified base URI.
