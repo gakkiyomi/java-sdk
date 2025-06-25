@@ -9,6 +9,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -111,7 +112,7 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 	/**
 	 * Creates a new transport instance with default HTTP client and object mapper.
 	 * @param baseUri the base URI of the MCP server
-	 * @deprecated Use {@link HttpClientSseClientTransport2#builder(String)} instead. This
+	 * @deprecated Use {@link HttpClientSseClientTransport#builder(String)} instead. This
 	 * constructor will be removed in future versions.
 	 */
 	@Deprecated(forRemoval = true)
@@ -125,7 +126,7 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 	 * @param baseUri the base URI of the MCP server
 	 * @param objectMapper the object mapper for JSON serialization/deserialization
 	 * @throws IllegalArgumentException if objectMapper or clientBuilder is null
-	 * @deprecated Use {@link HttpClientSseClientTransport2#builder(String)} instead. This
+	 * @deprecated Use {@link HttpClientSseClientTransport#builder(String)} instead. This
 	 * constructor will be removed in future versions.
 	 */
 	@Deprecated(forRemoval = true)
@@ -140,7 +141,7 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 	 * @param sseEndpoint the SSE endpoint path
 	 * @param objectMapper the object mapper for JSON serialization/deserialization
 	 * @throws IllegalArgumentException if objectMapper or clientBuilder is null
-	 * @deprecated Use {@link HttpClientSseClientTransport2#builder(String)} instead. This
+	 * @deprecated Use {@link HttpClientSseClientTransport#builder(String)} instead. This
 	 * constructor will be removed in future versions.
 	 */
 	@Deprecated(forRemoval = true)
@@ -158,7 +159,7 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 	 * @param sseEndpoint the SSE endpoint path
 	 * @param objectMapper the object mapper for JSON serialization/deserialization
 	 * @throws IllegalArgumentException if objectMapper, clientBuilder, or headers is null
-	 * @deprecated Use {@link HttpClientSseClientTransport2#builder(String)} instead. This
+	 * @deprecated Use {@link HttpClientSseClientTransport#builder(String)} instead. This
 	 * constructor will be removed in future versions.
 	 */
 	@Deprecated(forRemoval = true)
@@ -193,7 +194,7 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 	}
 
 	/**
-	 * Creates a new builder for {@link HttpClientSseClientTransport2}.
+	 * Creates a new builder for {@link HttpClientSseClientTransport}.
 	 * @param baseUri the base URI of the MCP server
 	 * @return a new builder instance
 	 */
@@ -202,7 +203,7 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 	}
 
 	/**
-	 * Builder for {@link HttpClientSseClientTransport2}.
+	 * Builder for {@link HttpClientSseClientTransport}.
 	 */
 	public static class Builder {
 
@@ -229,7 +230,7 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 		/**
 		 * Creates a new builder with the specified base URI.
 		 * @param baseUri the base URI of the MCP server
-		 * @deprecated Use {@link HttpClientSseClientTransport2#builder(String)} instead.
+		 * @deprecated Use {@link HttpClientSseClientTransport#builder(String)} instead.
 		 * This constructor is deprecated and will be removed or made {@code protected} or
 		 * {@code private} in a future release.
 		 */
@@ -317,7 +318,7 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 		}
 
 		/**
-		 * Builds a new {@link HttpClientSseClientTransport2} instance.
+		 * Builds a new {@link HttpClientSseClientTransport} instance.
 		 * @return a new transport instance
 		 */
 		public HttpClientSseClientTransport build() {
@@ -339,10 +340,13 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 				.GET()
 				.build();
 
-			Disposable connection = Flux
-				.<ResponseEvent>create(sseSink -> this.httpClient.sendAsync(request,
-						responseInfo -> ResponseSubscribers.sseToBodySubscriber(responseInfo, sseSink)))
-				.flatMap(responseEvent -> {
+			Disposable connection = Flux.<ResponseEvent>create(sseSink -> this.httpClient
+				.sendAsync(request, responseInfo -> ResponseSubscribers.sseToBodySubscriber(responseInfo, sseSink))
+				.exceptionallyCompose(e -> {
+					logger.warn("Error sending message", e);
+					sseSink.error(e);
+					return CompletableFuture.failedFuture(e);
+				})).flatMap(responseEvent -> {
 					if (isClosing) {
 						return Mono.empty();
 					}
@@ -382,24 +386,19 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 					return Flux.<McpSchema.JSONRPCMessage>error(
 							new RuntimeException("Failed to send message: " + responseEvent));
 
-				})
-				.flatMap(jsonRpcMessage -> handler.apply(Mono.just(jsonRpcMessage)))
-				.onErrorResume(t -> {
+				}).flatMap(jsonRpcMessage -> handler.apply(Mono.just(jsonRpcMessage))).onErrorResume(t -> {
 					if (!isClosing) {
 						logger.error("SSE connection error", t);
 						sink.error(t);
 					}
 					return Mono.empty();
 
-				})
-				.doFinally(s -> {
+				}).doFinally(s -> {
 					Disposable ref = this.sseSubscription.getAndSet(null);
 					if (ref != null && !ref.isDisposed()) {
 						ref.dispose();
 					}
-				})
-				.contextWrite(sink.contextView())
-				.subscribe();
+				}).contextWrite(sink.contextView()).subscribe();
 
 			this.sseSubscription.set(connection);
 		});
@@ -425,7 +424,12 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 			try {
 				return this.serializeMessage(message)
 					.flatMap(body -> sendHttpPost(messageEndpointUri, body))
-					.doOnNext(this::logIfNotOk)
+					.doOnNext(response -> {
+						if (response.statusCode() != 200 && response.statusCode() != 201 && response.statusCode() != 202
+								&& response.statusCode() != 206) {
+							logger.error("Error sending message: {}", response.statusCode());
+						}
+					})
 					.doOnError(error -> {
 						if (!isClosing) {
 							logger.error("Error sending message: {}", error.getMessage());
@@ -461,14 +465,11 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 			.POST(HttpRequest.BodyPublishers.ofString(body))
 			.build();
 
-		return Mono.fromFuture(httpClient.sendAsync(request, HttpResponse.BodyHandlers.discarding()));
-	}
-
-	private void logIfNotOk(final HttpResponse<?> response) {
-		if (response.statusCode() != 200 && response.statusCode() != 201 && response.statusCode() != 202
-				&& response.statusCode() != 206) {
-			logger.error("Error sending message: {}", response.statusCode());
-		}
+		return Mono.fromFuture(
+				httpClient.sendAsync(request, HttpResponse.BodyHandlers.discarding()).exceptionallyCompose(e -> {
+					logger.warn("Error sending message", e);
+					return CompletableFuture.failedFuture(e);
+				}));
 	}
 
 	/**

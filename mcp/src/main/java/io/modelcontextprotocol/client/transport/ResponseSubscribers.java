@@ -328,7 +328,7 @@ public class ResponseSubscribers {
 
 		@Override
 		protected void hookOnNext(String line) {
-			System.out.println(">>>>>>>>>>>>>> Received line: " + line);
+			// nothing to do here, as this subscriber is for bodyless responses
 		}
 
 		/**
@@ -336,7 +336,9 @@ public class ResponseSubscribers {
 		 */
 		@Override
 		protected void hookOnComplete() {
-			this.sink.next(new ResponseEvent(responseInfo, new SseEvent(null, null, null)));
+			this.sink.next(new ResponseEvent(responseInfo, null, null));
+			// this.sink.next(new ResponseEvent(responseInfo, new SseEvent(null, null,
+			// null)));
 			this.sink.complete();
 		}
 
